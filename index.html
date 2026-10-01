@@ -25,7 +25,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 button:focus-visible,input:focus-visible{outline:2px solid var(--mark);outline-offset:2px}
 
 #stage{position:fixed;inset:0}
-video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
+video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
 #shade{position:absolute;inset:0;pointer-events:none}
 #guide{position:absolute;border:2px solid var(--mark);border-radius:6px;box-shadow:0 0 0 9999px rgba(10,11,14,.55);pointer-events:none;transition:border-color .2s}
 #guide.moving{border-color:#fff}
@@ -50,10 +50,12 @@ video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;backgrou
 .chip[aria-pressed="true"]{color:var(--mark);font-weight:600}
 #status{position:absolute;left:50%;transform:translateX(-50%);top:calc(env(safe-area-inset-top,0px) + 58px);background:rgba(20,22,26,.85);padding:6px 14px;border-radius:14px;font-size:14px;white-space:nowrap}
 
+#edgeTag{position:absolute;left:50%;transform:translateX(-50%);top:calc(env(safe-area-inset-top,0px) + 92px);background:rgba(20,22,26,.75);color:var(--muted);padding:4px 11px;border-radius:12px;font-size:12px;white-space:nowrap}
+#edgeTag.ok{color:var(--mark)}
 #bottom{bottom:0;padding-bottom:calc(env(safe-area-inset-bottom,0px) + 18px);justify-content:space-between}
 #thumbBtn{width:56px;height:56px;border-radius:10px;background:var(--panel) center/cover no-repeat;border:2px solid var(--line);position:relative}
 #count{position:absolute;top:-8px;right:-8px;min-width:24px;height:24px;border-radius:12px;background:var(--mark);color:var(--ink);font-size:13px;font-weight:700;display:grid;place-items:center;padding:0 6px}
-#shutter{width:76px;height:76px;border-radius:50%;border:4px solid var(--text);display:grid;place-items:center}
+#shutter{--p:0;width:76px;height:76px;border-radius:50%;border:4px solid var(--text);display:grid;place-items:center;background:conic-gradient(var(--mark) calc(var(--p)*1turn), transparent 0)}
 #shutter span{width:60px;height:60px;border-radius:50%;background:var(--text);transition:transform .1s}
 #shutter:active span{transform:scale(.88)}
 #pdfBtn{width:56px;height:56px;border-radius:10px;background:var(--panel);font-weight:700;font-size:15px}
@@ -110,6 +112,7 @@ input[type=range]{width:140px;accent-color:var(--mark)}
     </div>
   </div>
   <div id="status">준비 중</div>
+  <div id="edgeTag" hidden></div>
 
   <div class="bar" id="bottom">
     <button id="thumbBtn" aria-label="찍은 페이지 보기"><span id="count">0</span></button>
@@ -151,6 +154,7 @@ input[type=range]{width:140px;accent-color:var(--mark)}
   <ol>
     <li>책을 <b>노란 테두리</b>에 맞춰 놓으세요.</li>
     <li><b>페이지를 넘기고 손을 빼면</b> 자동으로 찍혀요.</li>
+    <li><b>어두운 바탕</b>(어두운 책상, 천) 위에 책을 놓으면 테두리를 잘 찾아요.</li>
     <li>폰을 거치대에 고정하면 훨씬 빠르고 흔들림도 없어요.</li>
     <li>다 찍으면 <b>PDF</b> 버튼으로 묶어서 저장하세요.</li>
   </ol>
@@ -169,11 +173,11 @@ const store = {
 const S = {
   mode: store.get('mode','single'), rotate: store.get('rotate',0), auto: store.get('auto',true),
   enhance: store.get('enhance',true), delay: store.get('delay',900), edge: store.get('edge',true), quad:null,
-  pages: [], phase:'ready', stillSince:0, busy:false, prev:null, guide:null, pdfBlob:null
+  pages: [], busy:false, guide:null, pdfBlob:null
 };
 const urls = new Map();
 let seq = 0;
-const MAXD = 2600, MOVE = 10, STILL = 3.5;
+const MAXD = 2600;
 
 /* ---------- storage (IndexedDB) ---------- */
 let dbp;
@@ -200,6 +204,20 @@ const dbClear = () => run('readwrite', s => s.clear()).catch(()=>{});
 /* ---------- UI state ---------- */
 function setStatus(t){ $('#status').textContent = t; }
 function idleStatus(){ setStatus(S.auto ? '페이지를 넘기면 자동으로 찍어요' : '셔터를 눌러 찍으세요'); }
+function sideways(){
+  if(S.mode !== 'spread' || !S.quad) return false;
+  const [tl,tr,,bl] = S.quad; let w = Math.hypot(tr.x-tl.x, tr.y-tl.y), h = Math.hypot(bl.x-tl.x, bl.y-tl.y);
+  if(S.rotate % 180) [w, h] = [h, w];
+  return h > w*1.05;
+}
+function edgeStatus(){
+  const el = $('#edgeTag'); if(!el) return;
+  if(!S.edge){ el.hidden = true; return; }
+  el.hidden = false;
+  el.textContent = !cv ? '테두리 인식 준비 중…' : !S.quad ? '테두리 못 찾음 · 노란 틀로 찍어요'
+    : sideways() ? '책이 옆으로 누워 있어요 · ↻ 로 방향 맞추기' : '테두리 인식됨';
+  el.classList.toggle('ok', !!(cv && S.quad));
+}
 function urlFor(p){ if(!urls.has(p.id)) urls.set(p.id, URL.createObjectURL(p.blob)); return urls.get(p.id); }
 function refreshCounter(){
   $('#count').textContent = S.pages.length;
@@ -219,11 +237,17 @@ function syncControls(){
 }
 
 /* guide rectangle in screen px */
+/* the whole camera frame is shown (contain), so what you see is what gets captured */
+function fit(){
+  const vw = video.videoWidth || 3, vh = video.videoHeight || 4, r = video.getBoundingClientRect();
+  const s = Math.min(r.width/vw, r.height/vh);
+  return {s, x: r.left + (r.width - vw*s)/2, y: r.top + (r.height - vh*s)/2, w: vw*s, h: vh*s};
+}
 function layout(){
-  const W = innerWidth, H = innerHeight;
-  const top = $('#top').getBoundingClientRect().bottom + 46;
-  const bottom = H - $('#bottom').getBoundingClientRect().top + 14;
-  const area = {x:14, y:top, w:W-28, h:Math.max(80, H-top-bottom)};
+  const W = innerWidth, H = innerHeight, f = fit();
+  const top = Math.max($('#top').getBoundingClientRect().bottom + 46, f.y + 8);
+  const bottom = Math.max(H - $('#bottom').getBoundingClientRect().top + 14, H - (f.y + f.h) + 8);
+  const area = {x: Math.max(14, f.x + 8), y: top, w: Math.min(W-28, f.w - 16), h: Math.max(80, H-top-bottom)};
   let aspect = S.mode==='spread' ? 1.45 : 0.72;
   if(S.rotate % 180) aspect = 1/aspect;
   let w = area.w, h = w/aspect;
@@ -245,9 +269,7 @@ function layout(){
 
 /* map the guide (screen px) onto the camera frame */
 function guideInVideo(){
-  const vw = video.videoWidth, vh = video.videoHeight, r = video.getBoundingClientRect();
-  const s = Math.max(r.width/vw, r.height/vh);
-  const ox = r.left + (r.width - vw*s)/2, oy = r.top + (r.height - vh*s)/2;
+  const vw = video.videoWidth, vh = video.videoHeight, {s, x:ox, y:oy} = fit();
   const g = S.guide;
   let x = (g.x-ox)/s, y = (g.y-oy)/s, w = g.w/s, h = g.h/s;
   x = Math.max(0,x); y = Math.max(0,y); w = Math.min(vw-x,w); h = Math.min(vh-y,h);
@@ -284,7 +306,7 @@ const toBlob = c => new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
 
 /* ---------- edge detection (OpenCV) ---------- */
 const CV_URL = 'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js';
-let cv = null, cvLoading = null, miss = 0;
+let cv = null, cvLoading = null, miss = 0, hits = 0;
 function loadCV(){
   if(cv) return Promise.resolve();
   if(cvLoading) return cvLoading;
@@ -312,53 +334,125 @@ function order(p){   // → [tl, tr, br, bl] in frame coordinates
   return p.slice(i).concat(p.slice(0,i));
 }
 const DW = 360; let dc, dctx;
+const rect = n => cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(n,n));
+function morph(m, op, n){ const k = rect(n); cv.morphologyEx(m, m, op, k); k.delete(); }
+/* paper = bright and colourless; Otsu splits it from the desk, closing fills in the text */
+function paperMask(rgb){
+  const hsv = new cv.Mat(), ch = new cv.MatVector(), m = new cv.Mat();
+  cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV); cv.split(hsv, ch);
+  const sat = ch.get(1), val = ch.get(2);
+  cv.subtract(val, sat, m);
+  cv.GaussianBlur(m, m, new cv.Size(5,5), 0);
+  cv.threshold(m, m, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+  morph(m, cv.MORPH_CLOSE, 9); morph(m, cv.MORPH_OPEN, 5);
+  hsv.delete(); ch.delete(); sat.delete(); val.delete();
+  return m;
+}
+/* fallback: closed outlines from adaptive Canny, filled */
+function edgeMask(rgb){
+  const g = new cv.Mat(), e = new cv.Mat(), cs = new cv.MatVector(), h = new cv.Mat();
+  cv.cvtColor(rgb, g, cv.COLOR_RGB2GRAY); cv.GaussianBlur(g, g, new cv.Size(5,5), 0);
+  const hist = new Uint32Array(256), d = g.data; for(let i=0;i<d.length;i++) hist[d[i]]++;
+  let med = 0; for(let acc=0; med<256; med++){ acc += hist[med]; if(acc >= d.length/2) break; }
+  cv.Canny(g, e, Math.max(10, .5*med), Math.max(30, 1.2*med));
+  morph(e, cv.MORPH_CLOSE, 7);
+  cv.findContours(e, cs, h, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+  const m = cv.Mat.zeros(g.rows, g.cols, cv.CV_8U);
+  cv.drawContours(m, cs, -1, new cv.Scalar(255), -1);
+  morph(m, cv.MORPH_OPEN, 5);
+  g.delete(); e.delete(); cs.delete(); h.delete();
+  return m;
+}
+const ptsOf = m => { const d = m.data32S, o = []; for(let i=0;i<d.length;i+=2) o.push({x:d[i], y:d[i+1]}); return o; };
+const polyArea = q => Math.abs(q.reduce((s,p,i) => { const n = q[(i+1)%q.length]; return s + p.x*n.y - n.x*p.y; }, 0))/2;
+/* best 4-corner fit of a blob: approximate its convex hull, loosening until 4 corners remain */
+function hullQuad(c){
+  const hull = new cv.Mat(); cv.convexHull(c, hull, false, true);
+  const peri = cv.arcLength(hull, true); let q = null;
+  for(const eps of [.01,.015,.02,.03,.04,.05,.07,.1]){
+    const ap = new cv.Mat(); cv.approxPolyDP(hull, ap, eps*peri, true);
+    const n = ap.rows; if(n === 4) q = ptsOf(ap); ap.delete();
+    if(n <= 4) break;
+  }
+  if(!q){ const r = cv.minAreaRect(hull); q = cv.RotatedRect.points(r).map(p => ({x:p.x, y:p.y})); }
+  hull.delete(); return q;
+}
+function blobs(mask, A){
+  const cs = new cv.MatVector(), h = new cv.Mat(), out = [];
+  cv.findContours(mask, cs, h, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+  for(let i=0;i<cs.size();i++){
+    const c = cs.get(i), a = cv.contourArea(c);
+    if(a >= A*.04){
+      const q = hullQuad(c), qa = polyArea(q), fill = qa ? a/qa : 0;
+      if(fill >= .75) out.push({pts: ptsOf(c), a, q, fill, box: cv.boundingRect(c)});
+    }
+    c.delete();
+  }
+  cs.delete(); h.delete(); return out;
+}
+const near = (b1, b2, gap) => Math.max(0, Math.max(b1.x,b2.x) - Math.min(b1.x+b1.width, b2.x+b2.width)) <= gap
+                          && Math.max(0, Math.max(b1.y,b2.y) - Math.min(b1.y+b1.height, b2.y+b2.height)) <= gap;
+/* 한 쪽: the page under the centre of the frame.  펼침면: both pages (the gutter shadow splits them) merged. */
+function pickQuad(bs, W, H){
+  const A = W*H, diag = Math.hypot(W,H);
+  if(!bs.length) return null;
+  let q, area;
+  if(S.mode === 'single'){
+    const score = b => { const c = b.q.reduce((s,p) => ({x:s.x+p.x/4, y:s.y+p.y/4}), {x:0,y:0});
+      return b.a * b.fill * b.fill * (1 - Math.hypot(c.x-W/2, c.y-H/2)/diag); };
+    const b = bs.reduce((m, x) => score(x) > score(m) ? x : m);
+    q = b.q; area = b.a;
+  } else {
+    bs.sort((a,b) => b.a - a.a);
+    const group = [bs[0]];
+    for(const b of bs.slice(1)) if(b.a > .3*bs[0].a && group.some(g => near(b.box, g.box, .06*diag))) group.push(b);
+    const all = [].concat(...group.map(g => g.pts));
+    const m = cv.matFromArray(all.length, 1, cv.CV_32SC2, [].concat(...all.map(p => [p.x, p.y])));
+    q = hullQuad(m); m.delete();
+    area = group.reduce((s,g) => s + g.a, 0);
+  }
+  if(area < A*.10 || polyArea(q) > A*.98) return null;
+  return q;
+}
 function detect(){
   const vw = video.videoWidth, vh = video.videoHeight, k = DW/Math.max(vw,vh);
   const w = Math.round(vw*k), h = Math.round(vh*k);
   if(!dc){ dc = canvas(w,h); dctx = dc.getContext('2d',{willReadFrequently:true}); }
   if(dc.width!==w || dc.height!==h){ dc.width = w; dc.height = h; }
   dctx.drawImage(video, 0, 0, w, h);
-  const src = cv.imread(dc), g = new cv.Mat(), cs = new cv.MatVector(), hier = new cv.Mat(), ker = cv.Mat.ones(3,3,cv.CV_8U);
-  let best = null, bestA = w*h*0.12;
+  const src = cv.imread(dc), rgb = new cv.Mat();
+  cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB); src.delete();
+  let q = null;
   try{
-    cv.cvtColor(src, g, cv.COLOR_RGBA2GRAY);
-    cv.GaussianBlur(g, g, new cv.Size(5,5), 0);
-    cv.Canny(g, g, 40, 120);
-    cv.dilate(g, g, ker);
-    cv.findContours(g, cs, hier, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
-    for(let i=0;i<cs.size();i++){
-      const c = cs.get(i), ap = new cv.Mat();
-      cv.approxPolyDP(c, ap, 0.02*cv.arcLength(c,true), true);
-      if(ap.rows===4 && cv.isContourConvex(ap)){
-        const a = Math.abs(cv.contourArea(ap));
-        if(a > bestA){ bestA = a; best = Array.from(ap.data32S); }
-      }
-      ap.delete(); c.delete();
+    for(const mk of [paperMask, edgeMask]){
+      const m = mk(rgb); const bs = blobs(m, w*h); m.delete();
+      q = pickQuad(bs, w, h); if(q) break;
     }
-  }finally{ src.delete(); g.delete(); cs.delete(); hier.delete(); ker.delete(); }
-  return best && order([0,1,2,3].map(i => ({x:best[2*i]/k, y:best[2*i+1]/k})));
+  }finally{ rgb.delete(); }
+  return q && order(q.map(p => ({x:p.x/k, y:p.y/k})));
 }
 const quadDist = (a,b) => a.reduce((s,p,i) => s + Math.hypot(p.x-b[i].x, p.y-b[i].y), 0)/4;
 function toScreen(p){
-  const vw = video.videoWidth, vh = video.videoHeight, r = video.getBoundingClientRect();
-  const s = Math.max(r.width/vw, r.height/vh);
-  return {x: r.left + (r.width-vw*s)/2 + p.x*s, y: r.top + (r.height-vh*s)/2 + p.y*s};
+  const f = fit();
+  return {x: f.x + p.x*f.s, y: f.y + p.y*f.s};
 }
 function drawQuad(){
   const on = !!(S.edge && cv && S.quad);
   $('#quad polygon').setAttribute('points', on ? S.quad.map(p => { const q = toScreen(p); return q.x.toFixed(1)+','+q.y.toFixed(1); }).join(' ') : '');
   guideEl.classList.toggle('hide', on);
+  edgeStatus();
 }
 function edgeLoop(){
   setTimeout(edgeLoop, 140);
   if(!cv || !S.edge || S.busy || document.hidden || $('#gallery').classList.contains('open') || !video.videoWidth) return;
-  let q = null; try{ q = detect(); }catch(e){}
-  if(q){
+  let q = null; try{ q = detect(); }catch(e){ console.warn(e); }
+  hits = (hits << 1 | (q ? 1 : 0)) & 7;
+  if(q && (hits & 6)){
     miss = 0;
     if(S.quad && quadDist(q, S.quad) < 0.05*Math.hypot(video.videoWidth, video.videoHeight))
       S.quad = S.quad.map((a,i) => ({x:(a.x+q[i].x)/2, y:(a.y+q[i].y)/2}));
     else S.quad = q;
-  } else if(++miss > 4) S.quad = null;
+  } else if(!q && ++miss > 4) S.quad = null;
   drawQuad();
 }
 function free(c){ c.width = c.height = 0; }   // iOS caps total canvas memory
@@ -401,7 +495,9 @@ async function capture(){
       c = canvas(r.w*k, r.h*k);
       c.getContext('2d').drawImage(video, r.x, r.y, r.w, r.h, 0, 0, c.width, c.height);
     }
-    const rc = rotate(c, S.rotate); if(rc !== c) free(c); c = rc;
+    let rc = rotate(c, S.rotate); if(rc !== c) free(c); c = rc;
+    // a spread is always wider than tall; if not, the book lies sideways: turn it so the split hits the gutter
+    if(S.mode==='spread' && c.height > c.width*1.05){ rc = rotate(c, 90); free(c); c = rc; }
     const parts = S.mode==='spread' ? halves(c) : [c];
     if(parts[0] !== c) free(c);
     for(const p of parts){
@@ -413,41 +509,58 @@ async function capture(){
     }
     S.pdfBlob = null; refreshCounter();
     setStatus(`${S.pages.length}장 찍었어요`);
-    setTimeout(() => { if(S.phase==='ready' && !S.busy) idleStatus(); }, 1200);
+    setTimeout(() => { if(A.phase==='armed' && !S.busy) idleStatus(); }, 1200);
   }finally{
-    S.phase = 'ready'; S.stillSince = 0; S.busy = false;
+    S.busy = false; arm('armed');
   }
 }
 
-/* ---------- motion detection: move → hold still → shoot ---------- */
-const SW=64, SH=48, sc=canvas(SW,SH), sctx=sc.getContext('2d',{willReadFrequently:true});
+/* ---------- auto capture: page turn (motion) → hand out and hold still → shoot ----------
+   Thresholds follow the measured frame-to-frame jitter, so a hand-held phone
+   (constant small shake and sensor noise) still counts as "still". */
+// 256×192 sample averaged in 8×8 blocks → 32×24. A plain big downscale samples only a few pixels,
+// and with text lines about one sample apart a 2–4 px hand shake looked like motion.
+const SW=256, SH=192, B=8, sc=canvas(SW,SH), sctx=sc.getContext('2d',{willReadFrequently:true});
+sctx.imageSmoothingQuality = 'high';
 function smallFrame(){
   if(!video.videoWidth) return null;
   const r = guideInVideo(); sctx.drawImage(video, r.x, r.y, r.w, r.h, 0, 0, SW, SH);
-  const d = sctx.getImageData(0,0,SW,SH).data, g = new Uint8Array(SW*SH);
-  for(let i=0,j=0;i<d.length;i+=4,j++) g[j]=(d[i]+d[i+1]*2+d[i+2])>>2;
+  const d = sctx.getImageData(0,0,SW,SH).data, gw = SW/B, g = new Float32Array(gw*SH/B), k = 4*B*B;
+  for(let y=0;y<SH;y++){ const row = ((y/B)|0)*gw;
+    for(let x=0;x<SW;x++){ const i=(y*SW+x)*4; g[row+((x/B)|0)] += (d[i]+d[i+1]*2+d[i+2])/k; } }
   return g;
 }
 function diff(a,b){ let s=0; for(let i=0;i<a.length;i++) s+=Math.abs(a[i]-b[i]); return s/a.length; }
+const A = {phase:'settle', prev:null, bg:null, last:0, hist:[], stillMs:0, calmMs:0, since:0};
+if(/debug/.test(location.search)) window.__bs = {A, S, get cv(){ return cv; }};
+function arm(phase){ A.phase = phase; A.since = performance.now(); A.prev = A.bg = null; A.stillMs = A.calmMs = 0; hold(0); guideEl.classList.toggle('moving', phase==='moving'); }
+function hold(p){ $('#shutter').style.setProperty('--p', Math.min(1, p).toFixed(3)); }
 function tick(){
-  setTimeout(tick, 110);
-  if(!S.auto || S.busy || document.hidden || $('#gallery').classList.contains('open')) { S.prev=null; return; }
+  setTimeout(tick, 100);
+  if(!S.auto || S.busy || document.hidden || $('#gallery').classList.contains('open')){ A.prev = null; A.stillMs = A.calmMs = 0; hold(0); return; }
   const f = smallFrame(); if(!f) return;
-  if(S.prev){
-    const d = diff(f, S.prev), now = performance.now();
-    if(S.phase==='ready'){
-      if(d > MOVE){ S.phase='moving'; guideEl.classList.add('moving'); setStatus('손을 빼면 찍어요'); }
-    } else if(S.phase==='moving'){
-      if(d < STILL){
-        if(!S.stillSince) S.stillSince = now;
-        if(now - S.stillSince > S.delay){
-          guideEl.classList.remove('moving'); S.stillSince = 0;
-          capture();   // no "same page" check: text pages look alike when downscaled, so it dropped real pages
-        }
-      } else S.stillSince = 0;
-    }
+  const now = performance.now();
+  if(!A.prev){ A.prev = f; A.bg = f.slice(); A.last = now; return; }
+  const d = diff(f, A.prev), dt = Math.min(now - A.last, 300), fromBg = diff(f, A.bg);
+  A.prev = f; A.last = now;
+  for(let i=0;i<f.length;i++) A.bg[i] += (f[i]-A.bg[i])*.06;     // slow background: absorbs drift, not a hand
+  // this phone's normal jitter = a low percentile of recent frame-to-frame change. Not learned while a hand
+  // moves, unless "moving" drags on (the phone was picked up and shakes more than before).
+  if(A.phase !== 'moving' || now - A.since > 4000){ A.hist.push(d); if(A.hist.length > 30) A.hist.shift(); }
+  if(A.hist.length < 8) return;
+  const sorted = A.hist.slice().sort((a,b) => a-b), noise = sorted[Math.floor(sorted.length*.4)];
+  const moveT = Math.max(4, noise*2.2 + 2), stillT = Math.max(1.2, noise*1.3 + 1), calmT = moveT*.75;
+  if(window.__bs){ (A.log = A.log || []).push([A.phase[0], +d.toFixed(1), +fromBg.toFixed(1), +noise.toFixed(1)]); if(A.log.length > 400) A.log.shift(); }
+  if(A.phase === 'armed'){
+    if(d > moveT || fromBg > moveT*1.3){ arm('moving'); setStatus('손을 빼고 잠깐 멈추면 찍어요'); }
+    return;
   }
-  S.prev = f;
+  // 'moving' = after a page turn; 'settle' = camera just opened, shoot the first page once steady
+  A.stillMs = d < stillT ? A.stillMs + dt : 0;
+  A.calmMs  = d < calmT  ? A.calmMs  + dt : 0;  // shaky hands never get fully still: accept calm for longer
+  const p = Math.max(A.stillMs/S.delay, A.calmMs/(S.delay*2.5));
+  hold(p);
+  if(p >= 1) capture();
 }
 
 /* ---------- camera ---------- */
@@ -460,6 +573,7 @@ async function startCamera(){
     audio:false, video:{ facingMode:{ideal:'environment'}, width:{ideal:3840}, height:{ideal:2160} }
   });
   video.srcObject = stream; await video.play();
+  video.addEventListener('resize', () => { layout(); drawQuad(); });
   const track = stream.getVideoTracks()[0];
   try{ const cap = track.getCapabilities ? track.getCapabilities() : {};
     if(cap.focusMode && cap.focusMode.includes('continuous')) await track.applyConstraints({advanced:[{focusMode:'continuous'}]});
@@ -471,8 +585,8 @@ $('#go').onclick = async () => {
   try{
     actx = new (window.AudioContext || window.webkitAudioContext)();
     await startCamera(); keepAwake();
-    $('#start').style.display = 'none'; syncControls(); tick(); edgeLoop();
-    if(S.edge) loadCV().catch(()=>{});
+    $('#start').style.display = 'none'; syncControls(); arm('settle'); tick(); edgeLoop(); edgeStatus();
+    if(S.edge) loadCV().then(edgeStatus, edgeStatus);
   }catch(e){
     $('#err').textContent = location.protocol==='https:' || location.hostname==='localhost'
       ? '카메라를 열 수 없어요. 설정에서 카메라 권한을 허용한 뒤 다시 눌러 주세요.'
@@ -481,10 +595,10 @@ $('#go').onclick = async () => {
 };
 
 /* ---------- controls ---------- */
-$('#mSingle').onclick = () => { S.mode='single'; store.set('mode',S.mode); syncControls(); };
-$('#mSpread').onclick = () => { S.mode='spread'; store.set('mode',S.mode); syncControls(); };
+$('#mSingle').onclick = () => { S.quad=null; S.mode='single'; store.set('mode',S.mode); syncControls(); };
+$('#mSpread').onclick = () => { S.quad=null; S.mode='spread'; store.set('mode',S.mode); syncControls(); };
 $('#rotBtn').onclick = () => { S.rotate=(S.rotate+90)%360; store.set('rotate',S.rotate); syncControls(); };
-$('#autoBtn').onclick = () => { S.auto=!S.auto; store.set('auto',S.auto); S.phase='ready'; guideEl.classList.remove('moving'); syncControls(); };
+$('#autoBtn').onclick = () => { S.auto=!S.auto; store.set('auto',S.auto); arm('armed'); syncControls(); };
 $('#shutter').onclick = () => capture();
 $('#edgeSw').onclick = () => {
   S.edge=!S.edge; store.set('edge',S.edge); S.quad=null; drawQuad(); syncControls();
@@ -514,7 +628,7 @@ function renderGrid(){
 function openGallery(){ renderGrid(); $('#gallery').classList.add('open'); }
 $('#thumbBtn').onclick = openGallery;
 $('#pdfBtn').onclick = openGallery;
-$('#closeG').onclick = () => { $('#gallery').classList.remove('open'); S.phase='ready'; idleStatus(); };
+$('#closeG').onclick = () => { $('#gallery').classList.remove('open'); arm('armed'); idleStatus(); };
 $('#clearAll').onclick = async () => {
   if(!S.pages.length || !confirm(`${S.pages.length}장을 모두 지울까요? 되돌릴 수 없어요.`)) return;
   await dbClear(); urls.forEach(u => URL.revokeObjectURL(u)); urls.clear();
