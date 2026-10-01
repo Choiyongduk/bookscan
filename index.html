@@ -70,6 +70,16 @@ video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;backgr
 .tile img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
 .tile .n{position:absolute;left:6px;bottom:6px;font-size:12px;background:rgba(20,22,26,.8);padding:1px 6px;border-radius:8px}
 .tile .x{position:absolute;right:4px;top:4px;width:28px;height:28px;border-radius:14px;background:rgba(20,22,26,.85);font-size:16px;line-height:1}
+.tile .chk{position:absolute;right:6px;top:6px;width:26px;height:26px;border-radius:13px;border:2px solid #fff;background:rgba(20,22,26,.45);display:none;place-items:center;font-size:15px;font-weight:700;color:transparent}
+#gallery.selecting .tile{cursor:pointer}
+#gallery.selecting .panel:not(#selBar){display:none}
+#gallery.selecting .tile .chk{display:grid}
+#gallery.selecting .tile .x{display:none}
+.tile.sel{outline:3px solid var(--mark);outline-offset:-3px}
+.tile.sel img{opacity:.75}
+.tile.sel .chk{background:var(--mark);border-color:var(--mark);color:var(--ink)}
+.primary.danger{background:var(--danger);color:#fff}
+#delayPill{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 108px);background:rgba(31,34,41,.9);border-radius:16px;padding:7px 13px;font-size:13px}
 .empty{grid-column:1/-1;color:var(--muted);text-align:center;padding:60px 20px;line-height:1.6}
 .panel{border-top:1px solid var(--line);padding:14px 16px;display:grid;gap:12px}
 .row{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:15px}
@@ -117,6 +127,7 @@ input[type=range]{width:140px;accent-color:var(--mark)}
   <div class="bar" id="bottom">
     <button id="thumbBtn" aria-label="찍은 페이지 보기"><span id="count">0</span></button>
     <button id="shutter" aria-label="지금 찍기"><span></span></button>
+    <button id="delayPill" aria-label="자동 촬영 대기 시간 바꾸기">⏱ 0.9초</button>
     <button id="pdfBtn" aria-label="PDF 만들기">PDF</button>
   </div>
 </div>
@@ -124,7 +135,11 @@ input[type=range]{width:140px;accent-color:var(--mark)}
 <section class="sheet" id="gallery" aria-label="찍은 페이지">
   <header>
     <h2 id="gTitle">찍은 페이지</h2>
-    <button class="chip" id="closeG">카메라로</button>
+    <div style="display:flex;gap:8px">
+      <button class="chip" id="selAll" hidden>전체 선택</button>
+      <button class="chip" id="selBtn">선택</button>
+      <button class="chip" id="closeG">카메라로</button>
+    </div>
   </header>
   <div id="grid"></div>
   <div class="panel">
@@ -137,8 +152,8 @@ input[type=range]{width:140px;accent-color:var(--mark)}
       <button class="switch" id="enhSw" role="switch" aria-checked="true" aria-label="선명하게"></button>
     </div>
     <div class="row">
-      <div>자동 촬영 대기<small>손이 멈춘 뒤 찍기까지 시간</small></div>
-      <div style="display:flex;align-items:center;gap:8px"><input type="range" id="delay" min="400" max="2000" step="100" value="900"><span id="delayV" style="width:36px;text-align:right">0.9초</span></div>
+      <div>자동 촬영 대기<small>손을 뺀 뒤 찍기까지 시간</small></div>
+      <div style="display:flex;align-items:center;gap:8px"><input type="range" id="delay" min="300" max="4000" step="100" value="900"><span id="delayV" style="width:36px;text-align:right">0.9초</span></div>
     </div>
     <div class="row"><input type="text" id="fname" value="스캔" aria-label="파일 이름"><span style="color:var(--muted)">.pdf</span></div>
     <div class="btns">
@@ -146,6 +161,9 @@ input[type=range]{width:140px;accent-color:var(--mark)}
       <button class="primary" id="savePdf" hidden>다시 공유</button>
     </div>
     <button class="ghost" id="clearAll">전부 지우기</button>
+  </div>
+  <div class="panel" id="selBar" hidden>
+    <button class="primary danger" id="delSel" disabled>선택한 사진 지우기</button>
   </div>
 </section>
 
@@ -232,7 +250,7 @@ function syncControls(){
   $('#autoBtn').textContent = S.auto ? '자동' : '수동';
   $('#enhSw').setAttribute('aria-checked', S.enhance);
   $('#edgeSw').setAttribute('aria-checked', S.edge);
-  $('#delay').value = S.delay; $('#delayV').textContent = (S.delay/1000).toFixed(1)+'초';
+  showDelay();
   layout(); idleStatus();
 }
 
@@ -605,30 +623,78 @@ $('#edgeSw').onclick = () => {
   if(S.edge) loadCV().catch(()=>{});
 };
 $('#enhSw').onclick = () => { S.enhance=!S.enhance; store.set('enhance',S.enhance); syncControls(); };
-$('#delay').oninput = e => { S.delay=+e.target.value; store.set('delay',S.delay); $('#delayV').textContent=(S.delay/1000).toFixed(1)+'초'; };
+function showDelay(){
+  const t = (S.delay/1000).toFixed(1)+'초';
+  $('#delay').value = S.delay; $('#delayV').textContent = t;
+  $('#delayPill').textContent = '⏱ ' + t; $('#delayPill').hidden = !S.auto;
+}
+function setDelay(ms){ S.delay = ms; store.set('delay', ms); showDelay(); }
+$('#delay').oninput = e => setDelay(+e.target.value);
+const DELAYS = [500, 900, 1500, 2500, 4000];
+$('#delayPill').onclick = () => {
+  const next = DELAYS.find(d => d > S.delay + 50) || DELAYS[0];
+  setDelay(next);
+  setStatus(`손을 빼고 ${(next/1000).toFixed(1)}초 뒤에 찍어요`);
+  setTimeout(() => { if(A.phase==='armed' && !S.busy) idleStatus(); }, 1500);
+};
 addEventListener('resize', () => setTimeout(() => { layout(); drawQuad(); }, 100));
 
 /* ---------- gallery ---------- */
+const sel = new Set(); let selecting = false;
+async function deletePages(ids){
+  const gone = new Set(ids);
+  await run('readwrite', st => { ids.forEach(id => st.delete(id)); }).catch(()=>{});
+  ids.forEach(id => { const u = urls.get(id); if(u){ URL.revokeObjectURL(u); urls.delete(id); } });
+  S.pages = S.pages.filter(p => !gone.has(p.id)); S.pdfBlob = null; $('#savePdf').hidden = true;
+  refreshCounter();
+}
+function syncSelection(){
+  const n = sel.size;
+  $('#gTitle').textContent = selecting ? `${n}장 선택됨` : `찍은 페이지 ${S.pages.length}장`;
+  $('#selAll').textContent = n && n === S.pages.length ? '전체 해제' : '전체 선택';
+  $('#delSel').disabled = !n;
+  $('#delSel').textContent = n ? `선택한 ${n}장 지우기` : '지울 사진을 눌러 고르세요';
+}
+function setSelecting(on){
+  selecting = on; sel.clear();
+  $('#gallery').classList.toggle('selecting', on);
+  $('#selBtn').textContent = on ? '취소' : '선택';
+  $('#selAll').hidden = !on; $('#closeG').hidden = on; $('#selBar').hidden = !on;
+  renderGrid();
+}
 function renderGrid(){
   const grid = $('#grid'); grid.innerHTML = '';
-  $('#gTitle').textContent = `찍은 페이지 ${S.pages.length}장`;
   $('#makePdf').disabled = !S.pages.length;
+  $('#selBtn').hidden = !S.pages.length && !selecting;
+  syncSelection();
   if(!S.pages.length){ grid.innerHTML = '<div class="empty">아직 찍은 페이지가 없어요.<br>카메라로 돌아가 첫 페이지를 찍어 보세요.</div>'; return; }
   S.pages.forEach((p, i) => {
-    const t = document.createElement('div'); t.className='tile';
-    t.innerHTML = `<img alt="${i+1}쪽" src="${urlFor(p)}"><span class="n">${i+1}</span><button class="x" aria-label="${i+1}쪽 지우기">×</button>`;
-    t.querySelector('.x').onclick = async () => {
-      await dbDel(p.id); URL.revokeObjectURL(urls.get(p.id)); urls.delete(p.id);
-      S.pages.splice(S.pages.indexOf(p), 1); S.pdfBlob = null; $('#savePdf').hidden = true;
-      refreshCounter(); renderGrid();
+    const t = document.createElement('div'); t.className = 'tile' + (sel.has(p.id) ? ' sel' : '');
+    t.innerHTML = `<img alt="${i+1}쪽" loading="lazy" src="${urlFor(p)}"><span class="n">${i+1}</span><span class="chk" aria-hidden="true">✓</span><button class="x" aria-label="${i+1}쪽 지우기">×</button>`;
+    t.querySelector('.x').onclick = async e => { e.stopPropagation(); await deletePages([p.id]); renderGrid(); };
+    t.onclick = () => {
+      if(!selecting) return;
+      if(sel.has(p.id)) sel.delete(p.id); else sel.add(p.id);
+      t.classList.toggle('sel', sel.has(p.id)); syncSelection();
     };
     grid.appendChild(t);
   });
 }
-function openGallery(){ renderGrid(); $('#gallery').classList.add('open'); }
+function openGallery(){ setSelecting(false); $('#gallery').classList.add('open'); }
 $('#thumbBtn').onclick = openGallery;
 $('#pdfBtn').onclick = openGallery;
 $('#closeG').onclick = () => { $('#gallery').classList.remove('open'); arm('armed'); idleStatus(); };
+$('#selBtn').onclick = () => setSelecting(!selecting);
+$('#selAll').onclick = () => {
+  if(sel.size === S.pages.length) sel.clear(); else S.pages.forEach(p => sel.add(p.id));
+  renderGrid();
+};
+$('#delSel').onclick = async () => {
+  const n = sel.size;
+  if(!n || !confirm(`선택한 ${n}장을 지울까요? 되돌릴 수 없어요.`)) return;
+  await deletePages([...sel]);
+  setSelecting(false);
+};
 $('#clearAll').onclick = async () => {
   if(!S.pages.length || !confirm(`${S.pages.length}장을 모두 지울까요? 되돌릴 수 없어요.`)) return;
   await dbClear(); urls.forEach(u => URL.revokeObjectURL(u)); urls.clear();
